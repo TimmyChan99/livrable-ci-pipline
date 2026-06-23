@@ -1,0 +1,113 @@
+name: Support Agent CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Lint & type check
+  # ─────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff
+
+      - name: Run Ruff linter
+        run: ruff check .
+
+      - name: Run Ruff formatter check
+        run: ruff format --check .
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Unit tests (no real credentials required — everything is mocked)
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        env:
+          # Dummy values — all external calls are mocked in tests
+          GOOGLE_API_KEY: dummy-key-for-ci
+          SUPABASE_URL: https://dummy.supabase.co
+          SUPABASE_SERVICE_KEY: dummy-supabase-key
+        run: |
+          pytest tests/ -v --tb=short
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Integration test — only runs on pushes to main with real secrets
+  # ─────────────────────────────────────────────────────────────────────────────
+  integration:
+    name: Integration Test (main only)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Smoke-test agent (requires real secrets)
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "
+          import os, sys
+          missing = [k for k in ('GOOGLE_API_KEY','SUPABASE_URL','SUPABASE_SERVICE_KEY') if not os.getenv(k)]
+          if missing:
+              print(f'Skipping integration test — missing secrets: {missing}')
+              sys.exit(0)
+          from agent import run_support_agent
+          result = run_support_agent('Hello, I am Test User, no product ID here')
+          assert result['response'], 'Expected a response'
+          print('Integration smoke test passed:', result['response'][:80])
+          "
