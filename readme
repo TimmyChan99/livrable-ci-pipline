@@ -1,0 +1,212 @@
+# 🤖 Support Agent — LangGraph + Supabase
+
+A production-ready **LangGraph** workflow that acts as a customer support agent. It parses a free-text support request, extracts the customer name and product ID, queries a **Supabase PostgreSQL** database for the product's current status, and replies with a natural-language response powered by **Gemini**.
+
+---
+
+## Workflow Overview
+
+```
+User Input
+    │
+    ▼
+┌─────────────┐
+│   extract   │  LLM extracts user_name + product_id from free text
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  validate   │  Checks product_id was found; sets error if missing
+└──────┬──────┘
+       │
+  ┌────┴────┐
+  │         │
+  ▼         ▼ (error → skip DB)
+┌───────────┐
+│fetch_prod │  Queries Supabase products table by ID
+└─────┬─────┘
+      │
+      ▼
+┌─────────────┐
+│   respond   │  LLM drafts a friendly reply based on status + note
+└──────┬──────┘
+       │
+       ▼
+    Response
+```
+
+### Nodes
+
+| Node | Responsibility |
+|------|----------------|
+| `extract` | Uses Gemini to parse `user_name` and `product_id` from raw input |
+| `validate` | Ensures `product_id` was extracted; routes to `respond` on error |
+| `fetch_product` | Calls Supabase and retrieves `status` + `note` for the product |
+| `respond` | Generates a natural-language reply; handles all error paths gracefully |
+
+### Product Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Not started yet |
+| `in_progress` | Currently being worked on |
+| `done` | Completed successfully |
+| `stopped` | Halted, no longer active |
+
+---
+
+## Project Structure
+
+```
+support_agent/
+├── agent.py              # LangGraph graph definition + nodes
+├── state.py              # SupportState TypedDict
+├── tools.py              # Supabase check_product_status tool
+├── requirements.txt      # Runtime dependencies
+├── requirements-dev.txt  # Dev/test dependencies
+├── .env.example          # Environment variable template
+├── tests/
+│   ├── conftest.py       # Pytest path setup
+│   └── test_agent.py     # Full test suite (all mocked)
+└── .github/
+    └── workflows/
+        └── ci.yml        # GitHub Actions CI pipeline
+```
+
+---
+
+## Quickstart
+
+### 1. Clone & install
+
+```bash
+git clone <your-repo>
+cd support_agent
+
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### 2. Set environment variables
+
+```bash
+cp .env.example .env
+# Edit .env with your real keys
+```
+
+Required variables:
+
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_API_KEY` | Google AI Studio / Gemini API key |
+| `SUPABASE_URL` | Your Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Supabase service role key (or anon key) |
+
+### 3. Set up the Supabase table
+
+Run this SQL in your Supabase SQL editor:
+
+```sql
+CREATE TABLE products (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT,
+    status      TEXT CHECK (status IN ('pending', 'in_progress', 'done', 'stopped')),
+    note        TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- Seed some test rows
+INSERT INTO products (id, name, status, note) VALUES
+  ('550e8400-e29b-41d4-a716-446655440000', 'Widget A', 'done',        'Shipped on Monday.'),
+  ('550e8400-e29b-41d4-a716-446655440001', 'Widget B', 'in_progress', 'Finishing QA today.'),
+  ('550e8400-e29b-41d4-a716-446655440002', 'Widget C', 'pending',     'Queued for next sprint.'),
+  ('550e8400-e29b-41d4-a716-446655440003', 'Widget D', 'stopped',     'Client cancelled the order.');
+```
+
+### 4. Run the agent
+
+```bash
+python agent.py "Hi, my name is Fatima and I need an update on product 550e8400-e29b-41d4-a716-446655440001"
+```
+
+Or interactively:
+
+```bash
+python agent.py
+# prompts: Your request:
+```
+
+---
+
+## Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+
+# All tests (no real credentials needed — everything mocked)
+pytest tests/ -v
+
+# With coverage
+pytest tests/ -v --cov=. --cov-report=term-missing
+```
+
+### Test Coverage
+
+| Test class | What it covers |
+|------------|----------------|
+| `TestExtractNode` | LLM extraction, missing ID, markdown fence stripping, LLM failure |
+| `TestValidateNode` | Passes valid state, errors on missing ID, propagates upstream errors |
+| `TestFetchNode` | Happy path, DB error, skips when error already set |
+| `TestRespondNode` | LLM reply, error path, LLM fallback |
+| `TestFullWorkflow` | End-to-end happy path, missing ID path, not-found path, all statuses |
+| `TestCheckProductStatus` | DB row, empty result, blank ID, unknown status normalisation, missing env |
+
+---
+
+## CI/CD Pipeline
+
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push/PR:
+
+| Job | Trigger | What it does |
+|-----|---------|--------------|
+| `lint` | all pushes/PRs | Ruff linting + format check |
+| `test` | all pushes/PRs | pytest on Python 3.10, 3.11, 3.12 (mocked, no real credentials) |
+| `integration` | push to `main` only | Smoke-tests the live agent with real secrets from GitHub Secrets |
+
+### Required GitHub Secrets (for integration job)
+
+Go to **Settings → Secrets → Actions** and add:
+- `GOOGLE_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_KEY`
+
+---
+
+## Error Handling
+
+| Scenario | Behaviour |
+|----------|-----------|
+| User provides no product ID | `validate` node sets an error; agent replies asking for a valid ID |
+| Product ID not in database | `fetch` node sets an error; agent replies with a "not found" message |
+| LLM fails during extraction | Error is captured; agent responds gracefully without crashing |
+| LLM fails during response generation | Falls back to a template-based reply |
+| Supabase credentials missing | `EnvironmentError` caught; error surfaced in response |
+| Unknown status value in DB | Normalised to `"unknown"` rather than crashing |
+
+---
+
+## Extending the Workflow
+
+- **Add authentication**: insert a `verify_user` node between `extract` and `validate`.
+- **Add ticket creation**: after `respond`, add a `create_ticket` node that POSTs to your ticketing system.
+- **Stream responses**: swap `app.invoke` for `app.stream` to get node-by-node updates.
+- **Multi-turn memory**: replace `SupportState` with a `MessagesState` and accumulate `HumanMessage` / `AIMessage` objects.
+
+---
+
+## License
+
+MIT
