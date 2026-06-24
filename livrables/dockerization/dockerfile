@@ -1,0 +1,17 @@
+# Use the official Langflow image
+FROM langflowai/langflow:latest
+
+# Create the directory where flows will be stored
+RUN mkdir -p /app/flows
+
+# Copy your flow JSON files from the local 'flows' directory into the container
+COPY ./app-workflows/*.json /app/flows/
+
+# Tell Langflow where to load flows from
+ENV LANGFLOW_LOAD_FLOWS_PATH=/app/flows
+
+# Expose the default port Langflow runs on
+EXPOSE 7860
+
+# Command to run Langflow
+CMD ["langflow", "run"]
